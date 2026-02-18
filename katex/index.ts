@@ -17,6 +17,16 @@ export default definePlugin({
         style.href = "https://cdn.jsdelivr.net/npm/katex@0.16.9/dist/katex.min.css";
         document.head.appendChild(style);
 
+        const tableStyle = document.createElement("style");
+        tableStyle.id = "katex-table-styles";
+        tableStyle.textContent = `
+            table { width: 100% !important; }
+            td { text-align: center !important; }
+            th { text-align: center !important; }
+            tr:nth-child(even) td { background-color: rgba(0, 0, 0, 0.3) !important; }
+        `;
+        document.head.appendChild(tableStyle);
+
         const script = document.createElement("script");
         script.src = "https://cdn.jsdelivr.net/npm/katex@0.16.9/dist/katex.min.js";
         script.onload = () => {
@@ -28,6 +38,7 @@ export default definePlugin({
     
     stop() {
         this.observer?.disconnect();
+        document.getElementById("katex-table-styles")?.remove();
     },
     
     startObserver() {
@@ -42,40 +53,128 @@ export default definePlugin({
         
         this.processMessages();
     },
+
+    renderInline(text: string): HTMLSpanElement {
+        const container = document.createElement("span");
+        const parts = text.split(/(\$\$[^\$]+\$\$|\$[^\$]+\$)/g);
+        parts.forEach(part => {
+            if (part.startsWith("$$") || (part.startsWith("$") && !part.startsWith("$$"))) {
+                const isDisplay = part.startsWith("$$");
+                const formula = isDisplay ? part.slice(2, -2) : part.slice(1, -1);
+                try {
+                    const span = document.createElement("span");
+                    span.innerHTML = katex.renderToString(formula, {
+                        displayMode: isDisplay,
+                        throwOnError: false
+                    });
+                    container.appendChild(span);
+                } catch (e) {
+                    container.appendChild(document.createTextNode(part));
+                }
+            } else if (part) {
+                container.appendChild(document.createTextNode(part));
+            }
+        });
+        return container;
+    },
+
+    renderTable(lines: string[]): HTMLTableElement {
+        const table = document.createElement("table");
+        table.style.cssText = "border-collapse:collapse;margin:8px 0;width:100%;";
+
+        const rows = lines.filter(l => l.trim().startsWith("|"));
+        let headerParsed = false;
+
+        rows.forEach((line, i) => {
+            const cells = line.split("|").slice(1, -1).map(c => c.trim());
+            const isSeparator = cells.every(c => /^:?-+:?$/.test(c));
+            if (isSeparator) return;
+
+            const tr = document.createElement("tr");
+            const isHeader = !headerParsed;
+
+            cells.forEach(cellText => {
+                const cell = document.createElement(isHeader ? "th" : "td");
+                cell.style.cssText = "border:1px solid #4e4e5a;padding:6px 12px;text-align:left;";
+                if (isHeader) cell.style.background = "#2b2d31";
+                cell.appendChild(this.renderInline(cellText));
+                tr.appendChild(cell);
+            });
+
+            if (isHeader) {
+                const thead = document.createElement("thead");
+                thead.appendChild(tr);
+                table.appendChild(thead);
+                headerParsed = true;
+            } else {
+                let tbody = table.querySelector("tbody");
+                if (!tbody) {
+                    tbody = document.createElement("tbody");
+                    table.appendChild(tbody);
+                }
+                const rowIndex = tbody.querySelectorAll("tr").length;
+                if (rowIndex % 2 === 1) tr.style.background = "rgba(0,0,0,0.3)";
+                tbody.appendChild(tr);
+            }
+        });
+
+        return table;
+    },
+
+    tokenize(text: string): Array<{ type: "table" | "katex" | "text"; content: string }> {
+        const tokens: Array<{ type: "table" | "katex" | "text"; content: string }> = [];
+        const lines = text.split("\n");
+        let i = 0;
+
+        while (i < lines.length) {
+            const line = lines[i];
+            if (line.trim().startsWith("|")) {
+                const tableLines: string[] = [];
+                while (i < lines.length && lines[i].trim().startsWith("|")) {
+                    tableLines.push(lines[i]);
+                    i++;
+                }
+                tokens.push({ type: "table", content: tableLines.join("\n") });
+            } else {
+                const katexPattern = /(\$\$[^\$]+\$\$|\$[^\$]+\$)/g;
+                if (katexPattern.test(line)) {
+                    tokens.push({ type: "katex", content: line });
+                } else {
+                    tokens.push({ type: "text", content: line });
+                }
+                i++;
+            }
+        }
+
+        return tokens;
+    },
     
     processMessages() {
         const messages = document.querySelectorAll('[id^="message-content-"]');
         
         messages.forEach((msg: Element) => {
-            if (msg.getAttribute('data-katex-processed')) return;
+            if (msg.getAttribute("data-katex-processed")) return;
             
-            const text = msg.textContent;
-            if (!text?.includes('$')) return;
-            
-            const parts = text.split(/(\$\$[^\$]+\$\$|\$[^\$]+\$)/g);
-            msg.innerHTML = '';
-            
-            parts.forEach(part => {
-                if (part.startsWith('$')) {
-                    const isDisplay = part.startsWith('$$');
-                    const formula = isDisplay ? part.slice(2, -2) : part.slice(1, -1);
-                    
-                    try {
-                        const span = document.createElement('span');
-                        span.innerHTML = katex.renderToString(formula, {
-                            displayMode: isDisplay,
-                            throwOnError: false
-                        });
-                        msg.appendChild(span);
-                    } catch (e) {
-                        msg.appendChild(document.createTextNode(part));
-                    }
-                } else if (part) {
-                    msg.appendChild(document.createTextNode(part));
+            const text = msg.textContent ?? "";
+            if (!text.includes("$") && !text.includes("|")) return;
+
+            const tokens = this.tokenize(text);
+            msg.innerHTML = "";
+
+            tokens.forEach((token, idx) => {
+                if (token.type === "table") {
+                    msg.appendChild(this.renderTable(token.content.split("\n")));
+                } else if (token.type === "katex") {
+                    const line = this.renderInline(token.content);
+                    msg.appendChild(line);
+                    if (idx < tokens.length - 1) msg.appendChild(document.createElement("br"));
+                } else {
+                    msg.appendChild(document.createTextNode(token.content));
+                    if (idx < tokens.length - 1) msg.appendChild(document.createElement("br"));
                 }
             });
             
-            msg.setAttribute('data-katex-processed', 'true');
+            msg.setAttribute("data-katex-processed", "true");
         });
     }
 });

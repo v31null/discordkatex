@@ -56,6 +56,23 @@ export default definePlugin({
         this.processMessages();
     },
 
+    extractRawText(node: Node): string {
+        if (node.nodeType === 3) return node.textContent ?? "";
+        if (node.nodeType === 1) {
+            const el = node as HTMLElement;
+            if (el.tagName === "BR") return "\n";
+            if (el.tagName === "IMG" && el.hasAttribute("alt")) return el.getAttribute("alt") || "";
+            
+            const inner = Array.from(el.childNodes).map(c => this.extractRawText(c)).join("");
+            
+            if (el.tagName === "EM") return "_" + inner + "_";
+            if (el.tagName === "STRONG") return "**" + inner + "**";
+            if (el.tagName === "U") return "__" + inner + "__";
+            if (el.tagName === "S") return "~~" + inner + "~~";
+            return inner;
+        }
+        return "";
+    },
     renderInline(text: string): HTMLSpanElement {
         const container = document.createElement("span");
         const parts = text.split(/(\$\$[^\$]+\$\$|\$[^\$]+\$)/g);
@@ -148,7 +165,6 @@ export default definePlugin({
         while (i < lines.length) {
             const line = lines[i];
 
-            // 1. Table logic (Unchanged)
             if (line.trim().startsWith("|")) {
                 const tableLines: string[] = [];
                 while (i < lines.length && lines[i].trim().startsWith("|")) {
@@ -159,7 +175,6 @@ export default definePlugin({
                 continue;
             }
 
-            // 2. NEW: Group multi-line $$ equations so they don't get cut
             const displayCount = (line.match(/\$\$/g) || []).length;
             if (displayCount % 2 !== 0) {
                 const mathLines: string[] = [line];
@@ -176,7 +191,6 @@ export default definePlugin({
                 continue;
             }
 
-            // 3. Standard single-line & inline logic (Unchanged)
             const katexPattern = /(\$\$[^\$]+\$\$|\$[^\$]+\$)/g;
             if (katexPattern.test(line)) {
                 tokens.push({ type: "katex", content: line });
@@ -195,7 +209,7 @@ export default definePlugin({
         messages.forEach((msg: Element) => {
             if (msg.getAttribute("data-katex-processed")) return;
 
-            const text = msg.textContent ?? "";
+            const text = this.extractRawText(msg);
             if (!text.includes("$") && !text.includes("|")) return;
 
             const tokens = this.tokenize(text);

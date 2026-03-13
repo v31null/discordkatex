@@ -61,10 +61,13 @@ export default definePlugin({
         if (node.nodeType === 1) {
             const el = node as HTMLElement;
             if (el.tagName === "BR") return "\n";
-            if (el.tagName === "IMG" && el.hasAttribute("alt")) return el.getAttribute("alt") || "";
-            
-            const inner = Array.from(el.childNodes).map(c => this.extractRawText(c)).join("");
-            
+            if (el.tagName === "IMG" && el.hasAttribute("alt"))
+                return el.getAttribute("alt") || "";
+
+            const inner = Array.from(el.childNodes)
+                .map((c) => this.extractRawText(c))
+                .join("");
+
             if (el.tagName === "EM") return "_" + inner + "_";
             if (el.tagName === "STRONG") return "**" + inner + "**";
             if (el.tagName === "U") return "__" + inner + "__";
@@ -73,18 +76,89 @@ export default definePlugin({
         }
         return "";
     },
+    parseMath(
+        text: string
+    ): Array<{ type: "text" | "display" | "inline"; content: string }> {
+        const parts: Array<{
+            type: "text" | "display" | "inline";
+            content: string;
+        }> = [];
+        let currentText = "";
+        let i = 0;
+
+        while (i < text.length) {
+            if (text.startsWith("$$", i)) {
+                let j = i + 2;
+                let found = false;
+                while (j < text.length) {
+                    if (text.startsWith("$$", j)) {
+                        if (currentText)
+                            parts.push({ type: "text", content: currentText });
+                        currentText = "";
+                        parts.push({
+                            type: "display",
+                            content: text.slice(i + 2, j),
+                        });
+                        i = j + 2;
+                        found = true;
+                        break;
+                    }
+                    j++;
+                }
+                if (!found) {
+                    currentText += "$$";
+                    i += 2;
+                }
+            } else if (text[i] === "$") {
+                let j = i + 1;
+                let braces = 0;
+                let escaped = false;
+                let found = false;
+
+                while (j < text.length) {
+                    if (escaped) {
+                        escaped = false; // Skip the escaped character
+                    } else if (text[j] === "\\") {
+                        escaped = true;
+                    } else if (text[j] === "{") {
+                        braces++; // Increase brace depth
+                    } else if (text[j] === "}") {
+                        braces--; // Decrease brace depth
+                    } else if (text[j] === "$" && braces === 0) {
+                        // Only close the math block if we aren't inside nested braces!
+                        if (currentText)
+                            parts.push({ type: "text", content: currentText });
+                        currentText = "";
+                        parts.push({
+                            type: "inline",
+                            content: text.slice(i + 1, j),
+                        });
+                        i = j + 1;
+                        found = true;
+                        break;
+                    }
+                    j++;
+                }
+                if (!found) {
+                    currentText += "$";
+                    i++;
+                }
+            } else {
+                currentText += text[i];
+                i++;
+            }
+        }
+        if (currentText) parts.push({ type: "text", content: currentText });
+        return parts;
+    },
     renderInline(text: string): HTMLSpanElement {
         const container = document.createElement("span");
-        const parts = text.split(/(\$\$[^\$]+\$\$|\$[^\$]+\$)/g);
-        parts.forEach((part) => {
-            if (
-                part.startsWith("$$") ||
-                (part.startsWith("$") && !part.startsWith("$$"))
-            ) {
-                const isDisplay = part.startsWith("$$");
-                let formula = isDisplay ? part.slice(2, -2) : part.slice(1, -1);
+        const parts = this.parseMath(text);
 
-                formula = formula
+        parts.forEach((part) => {
+            if (part.type === "display" || part.type === "inline") {
+                const isDisplay = part.type === "display";
+                let formula = part.content
                     .replace(/\\\[/g, "\\\\[")
                     .replace(/\\(?=[\s\n]|$)/g, "\\\\");
                 try {
@@ -92,13 +166,20 @@ export default definePlugin({
                     span.innerHTML = katex.renderToString(formula, {
                         displayMode: isDisplay,
                         throwOnError: false,
+                        macros: {
+                            "\\vtonull":
+                                "\\underline{\\raisebox{-0.74ex}{V}\\kern{-0.15em}31\\raisebox{-0.74ex}{\\kern{-0.08em}$n$}}",
+                        },
                     });
                     container.appendChild(span);
                 } catch (e) {
-                    container.appendChild(document.createTextNode(part));
+                    const delim = isDisplay ? "$$" : "$";
+                    container.appendChild(
+                        document.createTextNode(delim + part.content + delim)
+                    );
                 }
-            } else if (part) {
-                container.appendChild(document.createTextNode(part));
+            } else {
+                container.appendChild(document.createTextNode(part.content));
             }
         });
         return container;
@@ -191,8 +272,8 @@ export default definePlugin({
                 continue;
             }
 
-            const katexPattern = /(\$\$[^\$]+\$\$|\$[^\$]+\$)/g;
-            if (katexPattern.test(line)) {
+            const hasMath = this.parseMath(line).some((p) => p.type !== "text");
+            if (hasMath) {
                 tokens.push({ type: "katex", content: line });
             } else {
                 tokens.push({ type: "text", content: line });
@@ -202,11 +283,21 @@ export default definePlugin({
 
         return tokens;
     },
-
     processMessages() {
-        const messages = document.querySelectorAll('[id^="message-content-"]');
+        const rawTargets = document.querySelectorAll(
+            '[id^="message-content-"], div[data-text-variant]'
+        );
 
-        messages.forEach((msg: Element) => {
+        const targets = Array.from(rawTargets).filter((node) => {
+            let parent = node.parentElement;
+            while (parent) {
+                if (Array.from(rawTargets).includes(parent)) return false;
+                parent = parent.parentElement;
+            }
+            return true;
+        });
+
+        targets.forEach((msg: Element) => {
             if (msg.getAttribute("data-katex-processed")) return;
 
             const text = this.extractRawText(msg);

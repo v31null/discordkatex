@@ -8,13 +8,14 @@ export default definePlugin({
     name: "KaTeX-Integration",
     description: "Renders LaTeX formulas in messages using KaTeX",
     authors: [{ name: "V31NULL", id: 1108761945303158784n }],
-    
+
     observer: null as MutationObserver | null,
-    
+
     start() {
         const style = document.createElement("link");
         style.rel = "stylesheet";
-        style.href = "https://cdn.jsdelivr.net/npm/katex@0.16.9/dist/katex.min.css";
+        style.href =
+            "https://cdn.jsdelivr.net/npm/katex@0.16.9/dist/katex.min.css";
         document.head.appendChild(style);
 
         const tableStyle = document.createElement("style");
@@ -28,44 +29,52 @@ export default definePlugin({
         document.head.appendChild(tableStyle);
 
         const script = document.createElement("script");
-        script.src = "https://cdn.jsdelivr.net/npm/katex@0.16.9/dist/katex.min.js";
+        script.src =
+            "https://cdn.jsdelivr.net/npm/katex@0.16.9/dist/katex.min.js";
         script.onload = () => {
             console.log("KaTeX loaded");
             this.startObserver();
         };
         document.head.appendChild(script);
     },
-    
+
     stop() {
         this.observer?.disconnect();
         document.getElementById("katex-table-styles")?.remove();
     },
-    
+
     startObserver() {
         this.observer = new MutationObserver(() => {
             this.processMessages();
         });
-        
+
         this.observer.observe(document.body, {
             childList: true,
-            subtree: true
+            subtree: true,
         });
-        
+
         this.processMessages();
     },
 
     renderInline(text: string): HTMLSpanElement {
         const container = document.createElement("span");
         const parts = text.split(/(\$\$[^\$]+\$\$|\$[^\$]+\$)/g);
-        parts.forEach(part => {
-            if (part.startsWith("$$") || (part.startsWith("$") && !part.startsWith("$$"))) {
+        parts.forEach((part) => {
+            if (
+                part.startsWith("$$") ||
+                (part.startsWith("$") && !part.startsWith("$$"))
+            ) {
                 const isDisplay = part.startsWith("$$");
-                const formula = isDisplay ? part.slice(2, -2) : part.slice(1, -1);
+                let formula = isDisplay ? part.slice(2, -2) : part.slice(1, -1);
+
+                formula = formula
+                    .replace(/\\\[/g, "\\\\[")
+                    .replace(/\\(?=[\s\n]|$)/g, "\\\\");
                 try {
                     const span = document.createElement("span");
                     span.innerHTML = katex.renderToString(formula, {
                         displayMode: isDisplay,
-                        throwOnError: false
+                        throwOnError: false,
                     });
                     container.appendChild(span);
                 } catch (e) {
@@ -80,22 +89,27 @@ export default definePlugin({
 
     renderTable(lines: string[]): HTMLTableElement {
         const table = document.createElement("table");
-        table.style.cssText = "border-collapse:collapse;margin:8px 0;width:100%;";
+        table.style.cssText =
+            "border-collapse:collapse;margin:8px 0;width:100%;";
 
-        const rows = lines.filter(l => l.trim().startsWith("|"));
+        const rows = lines.filter((l) => l.trim().startsWith("|"));
         let headerParsed = false;
 
         rows.forEach((line, i) => {
-            const cells = line.split("|").slice(1, -1).map(c => c.trim());
-            const isSeparator = cells.every(c => /^:?-+:?$/.test(c));
+            const cells = line
+                .split("|")
+                .slice(1, -1)
+                .map((c) => c.trim());
+            const isSeparator = cells.every((c) => /^:?-+:?$/.test(c));
             if (isSeparator) return;
 
             const tr = document.createElement("tr");
             const isHeader = !headerParsed;
 
-            cells.forEach(cellText => {
+            cells.forEach((cellText) => {
                 const cell = document.createElement(isHeader ? "th" : "td");
-                cell.style.cssText = "border:1px solid #4e4e5a;padding:6px 12px;text-align:left;";
+                cell.style.cssText =
+                    "border:1px solid #4e4e5a;padding:6px 12px;text-align:left;";
                 if (isHeader) cell.style.background = "#2b2d31";
                 cell.appendChild(this.renderInline(cellText));
                 tr.appendChild(cell);
@@ -121,13 +135,20 @@ export default definePlugin({
         return table;
     },
 
-    tokenize(text: string): Array<{ type: "table" | "katex" | "text"; content: string }> {
-        const tokens: Array<{ type: "table" | "katex" | "text"; content: string }> = [];
+    tokenize(
+        text: string
+    ): Array<{ type: "table" | "katex" | "text"; content: string }> {
+        const tokens: Array<{
+            type: "table" | "katex" | "text";
+            content: string;
+        }> = [];
         const lines = text.split("\n");
         let i = 0;
 
         while (i < lines.length) {
             const line = lines[i];
+
+            // 1. Table logic (Unchanged)
             if (line.trim().startsWith("|")) {
                 const tableLines: string[] = [];
                 while (i < lines.length && lines[i].trim().startsWith("|")) {
@@ -135,26 +156,45 @@ export default definePlugin({
                     i++;
                 }
                 tokens.push({ type: "table", content: tableLines.join("\n") });
-            } else {
-                const katexPattern = /(\$\$[^\$]+\$\$|\$[^\$]+\$)/g;
-                if (katexPattern.test(line)) {
-                    tokens.push({ type: "katex", content: line });
-                } else {
-                    tokens.push({ type: "text", content: line });
-                }
-                i++;
+                continue;
             }
+
+            // 2. NEW: Group multi-line $$ equations so they don't get cut
+            const displayCount = (line.match(/\$\$/g) || []).length;
+            if (displayCount % 2 !== 0) {
+                const mathLines: string[] = [line];
+                i++;
+                while (i < lines.length) {
+                    mathLines.push(lines[i]);
+                    if (lines[i].includes("$$")) {
+                        i++;
+                        break;
+                    }
+                    i++;
+                }
+                tokens.push({ type: "katex", content: mathLines.join("\n") });
+                continue;
+            }
+
+            // 3. Standard single-line & inline logic (Unchanged)
+            const katexPattern = /(\$\$[^\$]+\$\$|\$[^\$]+\$)/g;
+            if (katexPattern.test(line)) {
+                tokens.push({ type: "katex", content: line });
+            } else {
+                tokens.push({ type: "text", content: line });
+            }
+            i++;
         }
 
         return tokens;
     },
-    
+
     processMessages() {
         const messages = document.querySelectorAll('[id^="message-content-"]');
-        
+
         messages.forEach((msg: Element) => {
             if (msg.getAttribute("data-katex-processed")) return;
-            
+
             const text = msg.textContent ?? "";
             if (!text.includes("$") && !text.includes("|")) return;
 
@@ -163,18 +203,22 @@ export default definePlugin({
 
             tokens.forEach((token, idx) => {
                 if (token.type === "table") {
-                    msg.appendChild(this.renderTable(token.content.split("\n")));
+                    msg.appendChild(
+                        this.renderTable(token.content.split("\n"))
+                    );
                 } else if (token.type === "katex") {
                     const line = this.renderInline(token.content);
                     msg.appendChild(line);
-                    if (idx < tokens.length - 1) msg.appendChild(document.createElement("br"));
+                    if (idx < tokens.length - 1)
+                        msg.appendChild(document.createElement("br"));
                 } else {
                     msg.appendChild(document.createTextNode(token.content));
-                    if (idx < tokens.length - 1) msg.appendChild(document.createElement("br"));
+                    if (idx < tokens.length - 1)
+                        msg.appendChild(document.createElement("br"));
                 }
             });
-            
+
             msg.setAttribute("data-katex-processed", "true");
         });
-    }
+    },
 });

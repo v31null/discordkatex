@@ -285,7 +285,7 @@ export default definePlugin({
     },
     processMessages() {
         const rawTargets = document.querySelectorAll(
-            '[id^="message-content-"], div[data-text-variant]'
+            '[id^="message-content-"], [id^="message-username-"] > span,div[data-text-variant]'
         );
 
         const targets = Array.from(rawTargets).filter((node) => {
